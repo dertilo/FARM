@@ -16,17 +16,20 @@ from farm.data_handler.input_features import (
     samples_to_features_bert_lm,
     sample_to_features_text,
     sample_to_features_squad,
+    sample_to_features_nq,
 )
 from farm.data_handler.samples import (
     Sample,
     SampleBasket,
     create_samples_squad,
+    create_samples_nq,
 )
 from farm.data_handler.utils import (
     read_tsv,
     read_docs_from_txt,
     read_ner_file,
     read_squad_file,
+    jsonl_to_df,
     is_json,
 )
 from farm.modeling.tokenization import Tokenizer, tokenize_with_metadata, truncate_sequences
@@ -890,5 +893,147 @@ class RegressionProcessor(Processor):
             tasks=self.tasks,
             max_seq_len=self.max_seq_len,
             tokenizer=self.tokenizer
+        )
+        return features
+
+
+class NaturalQuestionsProcessor(Processor):
+    """ Used to handle the Natural Questions dataset"""
+
+    def __init__(
+        self,
+        tokenizer,
+        max_seq_len,
+        data_dir,
+        label_list=None,
+        metric="squad",
+        train_filename="train-v2.0.json",
+        dev_filename="dev-v2.0.json",
+        test_filename=None,
+        dev_split=0,
+        doc_stride=128,
+        max_query_length=64,
+        **kwargs,
+    ):
+        """
+        :param tokenizer: Used to split a sentence (str) into tokens.
+        :param max_seq_len: Samples are truncated after this many tokens.
+        :type max_seq_len: int
+        :param data_dir: The directory in which the train and dev files can be found. Squad has a private test file
+        :type data_dir: str
+        :param label_list: list of labels to predict (strings). For most cases this should be: ["start_token", "end_token"]
+        :type label_list: list
+        :param metric: name of metric that shall be used for evaluation, can be "squad" or "squad_top_recall"
+        :type metric: str
+        :param train_filename: The name of the file containing training data.
+        :type train_filename: str
+        :param dev_filename: The name of the file containing the dev data. If None and 0.0 < dev_split < 1.0 the dev set
+                             will be a slice of the train set.
+        :type dev_filename: str or None
+        :param test_filename: None
+        :type test_filename: str
+        :param dev_split: The proportion of the train set that will sliced. Only works if dev_filename is set to None
+        :type dev_split: float
+        :param doc_stride: When the document containing the answer is too long it gets split into part, strided by doc_stride
+        :type doc_stride: int
+        :param max_query_length: Maximum length of the question (in number of subword tokens)
+        :type max_query_length: int
+        :param kwargs: placeholder for passing generic parameters
+        :type kwargs: object
+        """
+
+        self.target = "classification"
+        self.ph_output_type = "per_token_squad"
+
+        self.doc_stride = doc_stride
+        self.max_query_length = max_query_length
+
+        super(NaturalQuestionsProcessor, self).__init__(
+            tokenizer=tokenizer,
+            max_seq_len=max_seq_len,
+            train_filename=train_filename,
+            dev_filename=dev_filename,
+            test_filename=test_filename,
+            dev_split=dev_split,
+            data_dir=data_dir,
+            tasks={},
+        )
+
+        if metric and label_list:
+            self.add_task("question_answering", metric, label_list)
+        else:
+            logger.info("Initialized processor without tasks. Supply `metric` and `label_list` to the constructor for "
+                        "using the default task or add a custom task later via processor.add_task()")
+
+    def dataset_from_dicts(self, dicts, index=0, rest_api_schema=False, return_baskets = False):
+        if rest_api_schema:
+            dicts = [self._convert_rest_api_dict(x) for x in dicts]
+        #We need to add the index (coming from multiprocessing chunks) to have a unique numerical basket ID
+        self.baskets = [
+            SampleBasket(raw=tr, id=(i+index)*10000)
+            for i, tr in enumerate(dicts)
+        ]
+        self._init_samples_in_baskets_squad()
+        self._featurize_samples()
+        if index == 0:
+            self._log_samples(3)
+
+        if return_baskets:
+            dataset, tensor_names = self._create_dataset(keep_baskets=True)
+            return dataset, tensor_names, self.baskets
+        else:
+            dataset, tensor_names = self._create_dataset(keep_baskets=False)
+            return dataset, tensor_names
+
+    def _init_samples_in_baskets_squad(self):
+        #this function is only needed to work with integer IDs instead of strings
+        for basket in self.baskets:
+            all_dicts = [b.raw for b in self.baskets]
+            basket.samples = self._dict_to_samples(dictionary=basket.raw, all_dicts=all_dicts)
+            for num, sample in enumerate(basket.samples):
+                 sample.id = basket.id + num
+
+    def _convert_rest_api_dict(self, infer_dict):
+        # convert input coming from inferencer to SQuAD format
+        converted = {}
+        converted["paragraphs"] = [
+            {
+                "qas": [
+                    {
+                        "question": infer_dict.get("questions", None)[0],
+                        "id": "unusedID",
+                    }
+                ],
+                "context": infer_dict.get("text", None),
+                "document_id": infer_dict.get("document_id", None),
+            }
+        ]
+        return converted
+
+    def file_to_dicts(self, file: str) -> [dict]:
+        df = jsonl_to_df(file)
+        dicts = df.to_dict('records')
+        return dicts
+
+    def _dict_to_samples(self, dictionary: dict, **kwargs) -> [Sample]:
+        if "yes_no_answer" not in dictionary:
+            dictionary = self._convert_rest_api_dict(infer_dict=dictionary)
+        samples = create_samples_nq(entry=dictionary)
+        for sample in samples:
+            tokenized = tokenize_with_metadata(
+                text=" ".join(sample.clear_text["doc_tokens"]),
+                tokenizer=self.tokenizer
+            )
+            sample.tokenized = tokenized
+        return samples
+
+    def _sample_to_features(self, sample) -> dict:
+        features = sample_to_features_nq(
+            sample=sample,
+            tokenizer=self.tokenizer,
+            max_seq_len=self.max_seq_len,
+            doc_stride=self.doc_stride,
+            max_query_length=self.max_query_length,
+            tasks=self.tasks
         )
         return features

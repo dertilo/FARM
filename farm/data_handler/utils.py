@@ -100,6 +100,101 @@ def read_squad_file(filename):
         input_data = json.load(reader)["data"]
     return input_data
 
+def read_nq_file(filename):
+    """Read a SQuAD json file"""
+    if not (os.path.exists(filename)):
+        logger.info(f" Couldn't find {filename} locally. Trying to download ...")
+        _download_extract_downstream_data(filename)
+    with open(filename, "r", encoding="utf-8") as reader:
+        input_data = json.load(reader)
+    return input_data
+
+
+def jsonl_to_df(file_path, n_rows=1000, load_annotations=True, truncate=False, offset=200):
+    """
+    Simple utility function to load the .jsonl files for the
+    TF2.0 QA competition. It creates a dataframe of the dataset.
+
+    To use, click "File" > "Add utility script", search the name of this
+    notebook, then run:
+
+    Parameters:
+        * file_path: The path to your json_file
+        * n: The number of rows you are importing
+        * truncate: Whether to cut the text before the first answer (long or short)
+          and after the last answer (long or short), leaving a space for the offset
+        * offset: If offset = k, then keep only keep the interval (answer_start - k, answer_end + k)
+
+    Returns:
+        A Dataframe containing the following columns:
+            * document_text (str): The document split by whitespace, possibly truncated
+            * question_text (str): the question posed
+            * yes_no_answer (str): Could be "YES", "NO", or "NONE"
+            * short_answer_start (int): Start index of token, -1 if does not exist
+            * short_answer_start (int): End index of token, -1 if does not exist
+            * long_answer_start (int): Start index of token, -1 if does not exist
+            * long_answer_start (int): End index of token, -1 if does not exist
+
+        And may contain:
+            * example_id (str): ID representing the string. Only for test data.
+
+    Author: @xhlulu
+    Source: https://www.kaggle.com/xhlulu/tf-qa-jsonl-to-dataframe
+    """
+    json_lines = []
+
+    with open(file_path) as f:
+        for i in tqdm(range(n_rows)):
+            line = f.readline()
+            if not line:
+                break
+
+            line = json.loads(line)
+            last_token = line['long_answer_candidates'][-1]['end_token']
+
+            out_di = {
+                'document_text': line['document_text'],
+                'question_text': line['question_text']
+            }
+
+            if 'example_id' in line:
+                out_di['example_id'] = line['example_id']
+
+            if load_annotations:
+                annot = line['annotations'][0]
+
+                out_di['yes_no_answer'] = annot['yes_no_answer']
+                out_di['long_answer_start'] = annot['long_answer']['start_token']
+                out_di['long_answer_end'] = annot['long_answer']['end_token']
+
+                if len(annot['short_answers']) > 0:
+                    out_di['short_answer_start'] = annot['short_answers'][0]['start_token']
+                    out_di['short_answer_end'] = annot['short_answers'][0]['end_token']
+                else:
+                    out_di['short_answer_start'] = -1
+                    out_di['short_answer_end'] = -1
+
+                if truncate:
+                    if out_di['long_answer_start'] == -1:
+                        start_threshold = out_di['short_answer_start'] - offset
+                    elif out_di['short_answer_start'] == -1:
+                        start_threshold = out_di['long_answer_start'] - offset
+                    else:
+                        start_threshold = min(out_di['long_answer_start'], out_di['short_answer_start']) - offset
+
+                    start_threshold = max(0, start_threshold)
+                    end_threshold = max(out_di['long_answer_end'], out_di['short_answer_end']) + offset + 1
+
+                    out_di['document_text'] = " ".join(
+                        out_di['document_text'].split(' ')[start_threshold:end_threshold]
+                    )
+
+            json_lines.append(out_di)
+
+    df = pd.DataFrame(json_lines).fillna(-1)
+
+    return df
+
 def write_squad_predictions(predictions, out_filename, predictions_filename=None):
     predictions_json = {}
     for p in predictions:

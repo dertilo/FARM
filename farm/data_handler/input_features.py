@@ -472,3 +472,144 @@ def _SQUAD_improve_answer_span(
                 return (new_start, new_end)
 
     return (input_start, input_end)
+
+
+def sample_to_features_nq(
+    sample, tokenizer, max_seq_len, doc_stride, max_query_length, tasks,
+):
+    sample.clear_text = DotMap(sample.clear_text, _dynamic=False)
+    is_training = sample.clear_text.is_training
+
+    unique_id = 1000000000
+    features = []
+
+    query_tokens = tokenizer.tokenize(sample.clear_text.question_text)
+
+    if len(query_tokens) > max_query_length:
+        query_tokens = query_tokens[0:max_query_length]
+
+    tok_to_orig_index = []
+    orig_to_tok_index = []
+    all_doc_tokens = []
+    for (i, token) in enumerate(sample.clear_text.doc_tokens):
+        orig_to_tok_index.append(len(all_doc_tokens))
+        sub_tokens = tokenizer.tokenize(token)
+        for sub_token in sub_tokens:
+            tok_to_orig_index.append(i)
+            all_doc_tokens.append(sub_token)
+
+    tok_start_position = None
+    tok_end_position = None
+    if is_training and not sample.clear_text.short_answer_present:
+        tok_start_position = -1
+        tok_end_position = -1
+    if is_training and sample.clear_text.short_answer_present:
+        tok_start_position = orig_to_tok_index[sample.clear_text.short_token_start]
+        if sample.clear_text.short_token_end < len(sample.clear_text.doc_tokens):
+            tok_end_position = orig_to_tok_index[sample.clear_text.short_token_end]
+        else:
+            tok_end_position = len(all_doc_tokens)
+
+    # The -4 accounts for [CLS], [SEP] and [SEP] and special yes_no answer token [unused1] + [unused2]
+    max_tokens_for_doc = max_seq_len - len(query_tokens) - 5
+
+    # We can have documents that are longer than the maximum sequence length.
+    # To deal with this we do a sliding window approach, where we take chunks
+    # of the up to our max length with a stride of `doc_stride`.
+    _DocSpan = collections.namedtuple(  # pylint: disable=invalid-name
+        "DocSpan", ["start", "length"]
+    )
+    doc_spans = []
+    start_offset = 0
+    while start_offset < len(all_doc_tokens):
+        length = len(all_doc_tokens) - start_offset
+        if length > max_tokens_for_doc:
+            length = max_tokens_for_doc
+        doc_spans.append(_DocSpan(start=start_offset, length=length))
+        if start_offset + length == len(all_doc_tokens):
+            break
+        start_offset += min(length, doc_stride)
+
+    for (doc_span_index, doc_span) in enumerate(doc_spans):
+        tokens = []
+        segment_ids = []
+        tokens.append("[CLS]")
+        segment_ids.append(0)
+
+
+        ######### for yes no answer we add special tokens for yes [unsued1] and no [unused2]
+        tokens.append("[unused1]")
+        segment_ids.append(0)
+        tokens.append("[unused2]")
+        segment_ids.append(0)
+
+
+        for token in query_tokens:
+            tokens.append(token)
+            segment_ids.append(0)
+        tokens.append("[SEP]")
+        segment_ids.append(0)
+
+        for i in range(doc_span.length):
+            split_token_index = doc_span.start + i
+            tokens.append(all_doc_tokens[split_token_index])
+            segment_ids.append(1)
+        tokens.append("[SEP]")
+        segment_ids.append(1)
+
+        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+
+        # The mask has 1 for real tokens and 0 for padding tokens. Only real
+        # tokens are attended to.
+        padding_mask = [1] * len(input_ids)
+
+        # Zero-pad up to the sequence length.
+        while len(input_ids) < max_seq_len:
+            input_ids.append(0)
+            padding_mask.append(0)
+            segment_ids.append(0)
+
+        assert len(input_ids) == max_seq_len
+        assert len(padding_mask) == max_seq_len
+        assert len(segment_ids) == max_seq_len
+
+        start_position = 0
+        end_position = 0
+        if is_training and sample.clear_text.short_answer_present:
+            # For training, if our document chunk does not contain an annotation
+            # we keep it but set the start and end position to unanswerable
+            doc_start = doc_span.start
+            doc_end = doc_span.start + doc_span.length - 1
+            out_of_span = False
+            if not (tok_start_position >= doc_start and tok_end_position <= doc_end):
+                out_of_span = True
+            if out_of_span:
+                start_position = 0
+                end_position = 0
+            else:
+                doc_offset = len(query_tokens) + 4 # cls, unused1+2, sep
+                start_position = tok_start_position - doc_start + doc_offset
+                end_position = tok_end_position - doc_start + doc_offset
+        if is_training and not sample.clear_text.short_answer_present:
+            start_position = 0
+            end_position = 0
+        if is_training and (sample.clear_text.yes_no_answer == "YES"):
+            start_position = 1
+            end_position = 1
+        if is_training and (sample.clear_text.yes_no_answer == "NO"):
+            start_position = 2
+            end_position = 2
+
+        inp_feat = {}
+        inp_feat["input_ids"] = input_ids
+        inp_feat["padding_mask"] = padding_mask  # attention_mask
+        inp_feat["segment_ids"] = segment_ids  # token_type_ids
+        inp_feat["start_position"] = start_position
+        inp_feat["end_position"] = end_position
+        inp_feat["short_answer_present"] = sample.clear_text.short_answer_present
+        inp_feat["sample_id"] = sample.id
+        inp_feat["passage_shift"] = doc_span.start
+        features.append(inp_feat)
+        unique_id += 1
+
+    return features

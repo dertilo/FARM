@@ -210,3 +210,54 @@ def create_samples_squad(entry):
             num_examples += 1
             examples.append(example)
     return examples
+
+def create_samples_nq(entry):
+    """Turns a nq dict into a list of SquadExample."""
+    if "yes_no_answer" in entry:
+        is_training = True
+    else:
+        is_training = False
+
+    examples = []
+    paragraph_text = entry["document_text"]
+
+    char_to_word_offset = []
+    doc_tokens = paragraph_text.split(" ")
+    # for i, t in enumerate(doc_tokens):
+    #     char_to_word_offset.extend([i] * (len(t) + 1))
+
+
+    qas_id = entry["example_id"]
+    question_text = entry["question_text"]
+    start_position = None
+    end_position = None
+    short_answer_text = None
+    short_answer_present = False
+    if is_training:
+        short_answer_present = entry["short_answer_start"] > -1
+        if short_answer_present:
+            # TODO add long_answer start + end
+            short_token_start = int(entry["short_answer_start"])
+            short_token_end = int(entry["short_answer_end"])
+            short_answer_text = " ".join(doc_tokens[short_token_start:short_token_end])
+
+        else:
+            short_token_start = -1
+            short_token_end = -1
+            short_answer_text = ""
+
+    clear_text = {}
+    clear_text["qas_id"] = qas_id
+    clear_text["question_text"] = question_text
+    clear_text["doc_tokens"] = doc_tokens
+    clear_text["short_answer_text"] = short_answer_text
+    clear_text["short_token_start"] = short_token_start
+    clear_text["short_token_end"] = short_token_end
+    clear_text["short_answer_present"] = short_answer_present
+    clear_text["yes_no_answer"] = entry["yes_no_answer"]
+    clear_text["is_training"] = is_training
+    clear_text["document_id"] = entry.get("document_id", None)
+    example = Sample(
+        id=None, clear_text=clear_text, features=None, tokenized=None
+    )
+    return [example]
