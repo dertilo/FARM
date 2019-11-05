@@ -211,7 +211,7 @@ class Inferencer:
         )
 
         preds_all = []
-        for i, batch in enumerate(tqdm(data_loader, desc=f"Inferencing")):
+        for i, batch in enumerate(data_loader):
             batch = {key: batch[key].to(self.device) for key in batch}
             batch_samples = samples[i * self.batch_size : (i + 1) * self.batch_size]
             with torch.no_grad():
@@ -233,7 +233,7 @@ class Inferencer:
         )
 
         all_preds = []
-        for batch in tqdm(data_loader, desc=f"Inferencing"):
+        for batch in data_loader:
             batch = {key: batch[key].to(self.device) for key in batch}
             with torch.no_grad():
                 logits = self.model.forward(**batch)
