@@ -1033,11 +1033,12 @@ class QuestionAnsweringHead(PredictionHead):
             if np.sum(idx_text_answers) > 0:
                 group = group.loc[idx_text_answers,:]
             else:
-                logger.info(f"No textual prediction found in doc: {uid}")
+                do = "nothing"
+                #logger.info(f"No textual prediction found in doc: {uid}")
             if self.top_n_predictions == 1:
                 max_pred = group.loc[group.logit_sum == np.max(group.logit_sum),:]
                 if (max_pred.shape[0] > 1):
-                    max_pred = max_pred.iloc[0, :]
+                    max_pred = max_pred.iloc[:1, :]
                     logger.info(f"Multiple predictions have the exact same probability of occuring: \n{max_pred.head()}")
             else:
                 assert isinstance(self.top_n_predictions, int)
@@ -1055,3 +1056,85 @@ class QuestionAnsweringHead(PredictionHead):
         idx_without_zero = np.argsort(logits_without_zero,axis=1)[:,-n_best_size:]
         idx = idx_without_zero + 1
         return idx
+
+
+class NQAnsweringHead(QuestionAnsweringHead):
+    def logits_to_preds(self, logits, **kwargs):
+        """
+        Get the predicted index of start and end token of the answer.
+
+        :param logits: (start_logits, end_logits), logits for the start and end of answer
+        :type logits: tuple[torch.tensor,torch.tensor]
+        :param kwargs: placeholder for passing generic parameters
+        :type kwargs: object
+        :return: (start_idx, end_idx), start and end indices for all samples in batch
+        :rtype: (torch.tensor,torch.tensor)
+        """
+
+        # cast data into useful types/shapes
+        (start_logits, end_logits) = logits
+        start_logits = start_logits.cpu().numpy()
+        end_logits = end_logits.cpu().numpy()
+        num_per_batch = start_logits.shape[0]
+        segment_ids = kwargs['segment_ids'].data.cpu().numpy()
+        sample_ids = kwargs["sample_id"].cpu().numpy()
+        passage_shifts = kwargs["passage_shift"].cpu().numpy()
+
+        question_shifts = np.argmax(segment_ids > 0,axis=1)
+
+
+        impossible_answer_sum = start_logits[:,0] + end_logits[:,0]
+        yes_answer_sum = start_logits[:, 1] + end_logits[:, 1]
+        no_answer_sum = start_logits[:, 2] + end_logits[:, 2]
+
+        best_answer_sum = np.zeros(num_per_batch)
+        # check if start or end point to the context. Context starts at segment id == 1  (question comes before at segment ids == 0)
+        context_start = np.argmax(segment_ids,axis=1)
+        context_end = segment_ids.shape[1] - np.argmax(segment_ids[::-1],axis=1)
+        start_proposals = self._get_best_textanswer_indices(start_logits, 3)
+        end_proposals = self._get_best_textanswer_indices(end_logits, 3)
+        best_indices = np.zeros((num_per_batch,2),dtype=int)
+        for i_batch in range(num_per_batch):
+            # for each sample create mesh of possible start + end combinations and their score as sum of logits
+            mesh_idx = np.meshgrid(start_proposals[i_batch,:],end_proposals[i_batch])
+            start_comb = mesh_idx[0].flatten()
+            end_comb = mesh_idx[1].flatten()
+            scores = start_logits[i_batch,start_comb] + end_logits[i_batch,end_comb]
+            #iterate over combinations and eliminate impossible ones
+            for idx in np.argsort(scores)[::-1]:
+                start = start_comb[idx]
+                end = end_comb[idx]
+                if start < context_start[i_batch]:
+                    continue
+                if end > context_end[i_batch]:
+                    continue
+                if start > end:
+                    continue
+                if(end - start > self.max_ans_len):
+                    continue
+                # maybe need check weather start/end idx refers to start of word and not to a ##... continuation
+
+
+                # We compare the best answer with impossible or YES NO answer predictions
+                temp_scores = [impossible_answer_sum[i_batch] + self.no_answer_shift,
+                               yes_answer_sum[i_batch],
+                               no_answer_sum[i_batch],
+                               scores[idx]]
+                type_info = np.argmax(temp_scores)
+                if type_info == 3:
+                    best_indices[i_batch,0] = start
+                    best_indices[i_batch,1] = end
+                    best_answer_sum[i_batch] = scores[idx]
+                else:
+                    best_indices[i_batch, 0] = type_info
+                    best_indices[i_batch, 1] = type_info
+                    best_answer_sum[i_batch] = temp_scores[type_info]
+                break # since we take most likely predictions first, we stop when finding a valid prediction
+
+        # #probabilities computed through softmaxing logits. Currently unused in downstream code.
+        # start_probs = softmax(start_logits, axis=1)
+        # end_probs = softmax(end_logits, axis=1)
+        # probabilities = (start_probs[range(best_indices.shape[0]), np.squeeze(best_indices[:, 0])] +
+        #                  end_probs[range(best_indices.shape[0]), np.squeeze(best_indices[:, 1])]) / 2
+
+        return (best_indices[:, 0], best_indices[:, 1], best_answer_sum, sample_ids, question_shifts, passage_shifts)

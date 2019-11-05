@@ -163,7 +163,14 @@ class Trainer:
                         result = self.evaluator_dev.eval(model)
                         self.evaluator_dev.log_results(result, "Dev", self.global_step)
 
+                        ###########model checkpointing after each eval, keep only latest within one epoch
+                        save_dir = f"../saved_models/bert-base-nq_epoch{epoch}"
+                        model.save(save_dir)
+
                 self.global_step += 1
+
+
+
 
         if self.evaluator_test is not None:
             result = self.evaluator_test.eval(model)

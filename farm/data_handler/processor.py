@@ -1011,7 +1011,7 @@ class NaturalQuestionsProcessor(Processor):
         return converted
 
     def file_to_dicts(self, file: str) -> [dict]:
-        df = jsonl_to_df(file)
+        df = jsonl_to_df(file, truncate=True, offset=150)
         dicts = df.to_dict('records')
         return dicts
 
@@ -1034,6 +1034,5 @@ class NaturalQuestionsProcessor(Processor):
             max_seq_len=self.max_seq_len,
             doc_stride=self.doc_stride,
             max_query_length=self.max_query_length,
-            tasks=self.tasks
         )
         return features

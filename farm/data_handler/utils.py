@@ -100,17 +100,8 @@ def read_squad_file(filename):
         input_data = json.load(reader)["data"]
     return input_data
 
-def read_nq_file(filename):
-    """Read a SQuAD json file"""
-    if not (os.path.exists(filename)):
-        logger.info(f" Couldn't find {filename} locally. Trying to download ...")
-        _download_extract_downstream_data(filename)
-    with open(filename, "r", encoding="utf-8") as reader:
-        input_data = json.load(reader)
-    return input_data
 
-
-def jsonl_to_df(file_path, n_rows=1000, load_annotations=True, truncate=False, offset=200):
+def jsonl_to_df(file_path, load_annotations=True, truncate=False, offset=200):
     """
     Simple utility function to load the .jsonl files for the
     TF2.0 QA competition. It creates a dataframe of the dataset.
@@ -142,9 +133,9 @@ def jsonl_to_df(file_path, n_rows=1000, load_annotations=True, truncate=False, o
     Source: https://www.kaggle.com/xhlulu/tf-qa-jsonl-to-dataframe
     """
     json_lines = []
-
+    num_lines = sum(1 for line in open(file_path))
     with open(file_path) as f:
-        for i in tqdm(range(n_rows)):
+        for i in tqdm(range(num_lines)):
             line = f.readline()
             if not line:
                 break
@@ -184,6 +175,15 @@ def jsonl_to_df(file_path, n_rows=1000, load_annotations=True, truncate=False, o
 
                     start_threshold = max(0, start_threshold)
                     end_threshold = max(out_di['long_answer_end'], out_di['short_answer_end']) + offset + 1
+
+                    if out_di['long_answer_start'] > -1:
+                        out_di['long_answer_start'] = out_di['long_answer_start'] - start_threshold
+                        out_di['long_answer_end'] = out_di['long_answer_end'] - start_threshold
+
+                    if out_di['short_answer_start'] > -1:
+                        out_di['short_answer_start'] = out_di['short_answer_start'] - start_threshold
+                        out_di['short_answer_end'] = out_di['short_answer_end'] - start_threshold
+
 
                     out_di['document_text'] = " ".join(
                         out_di['document_text'].split(' ')[start_threshold:end_threshold]

@@ -229,32 +229,48 @@ def create_samples_nq(entry):
 
     qas_id = entry["example_id"]
     question_text = entry["question_text"]
-    start_position = None
-    end_position = None
-    short_answer_text = None
-    short_answer_present = False
-    if is_training:
-        short_answer_present = entry["short_answer_start"] > -1
-        if short_answer_present:
-            # TODO add long_answer start + end
-            short_token_start = int(entry["short_answer_start"])
-            short_token_end = int(entry["short_answer_end"])
-            short_answer_text = " ".join(doc_tokens[short_token_start:short_token_end])
 
+    short_token_start = -1
+    short_token_end = -1
+    short_answer_text = None
+    long_token_start = -1
+    long_token_end = -1
+    long_answer_text = None
+    is_impossible = False
+    if is_training:
+        if((entry["short_answer_start"] == -1) and (entry["long_answer_start"] == -1) and (entry["yes_no_answer"] == "NONE")):
+            is_impossible = True
+
+        short_token_start = int(entry["short_answer_start"])
+        short_token_end = int(entry["short_answer_end"])
+        if short_token_start > -1:
+            short_answer_text = " ".join(doc_tokens[short_token_start:short_token_end])
         else:
-            short_token_start = -1
-            short_token_end = -1
             short_answer_text = ""
+
+        long_token_start = int(entry["long_answer_start"])
+        long_token_end = int(entry["long_answer_end"])
+        if long_token_start > -1:
+            long_answer_text = " ".join(doc_tokens[long_token_start:long_token_end])
+        else:
+            long_answer_text = ""
 
     clear_text = {}
     clear_text["qas_id"] = qas_id
     clear_text["question_text"] = question_text
     clear_text["doc_tokens"] = doc_tokens
+
     clear_text["short_answer_text"] = short_answer_text
     clear_text["short_token_start"] = short_token_start
     clear_text["short_token_end"] = short_token_end
-    clear_text["short_answer_present"] = short_answer_present
+
+    #clear_text["long_answer_text"] = long_answer_text
+    clear_text["long_token_start"] = long_token_start
+    clear_text["long_token_end"] = long_token_end
+
     clear_text["yes_no_answer"] = entry["yes_no_answer"]
+    clear_text["is_impossible"] = is_impossible
+
     clear_text["is_training"] = is_training
     clear_text["document_id"] = entry.get("document_id", None)
     example = Sample(

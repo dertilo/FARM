@@ -475,7 +475,7 @@ def _SQUAD_improve_answer_span(
 
 
 def sample_to_features_nq(
-    sample, tokenizer, max_seq_len, doc_stride, max_query_length, tasks,
+    sample, tokenizer, max_seq_len, doc_stride, max_query_length,
 ):
     sample.clear_text = DotMap(sample.clear_text, _dynamic=False)
     is_training = sample.clear_text.is_training
@@ -488,29 +488,33 @@ def sample_to_features_nq(
     if len(query_tokens) > max_query_length:
         query_tokens = query_tokens[0:max_query_length]
 
-    tok_to_orig_index = []
     orig_to_tok_index = []
     all_doc_tokens = []
     for (i, token) in enumerate(sample.clear_text.doc_tokens):
         orig_to_tok_index.append(len(all_doc_tokens))
         sub_tokens = tokenizer.tokenize(token)
         for sub_token in sub_tokens:
-            tok_to_orig_index.append(i)
             all_doc_tokens.append(sub_token)
+    orig_to_tok_index.append(-1) #to keep orig_to_tok_index[-1] pointing to -1
 
-    tok_start_position = None
-    tok_end_position = None
-    if is_training and not sample.clear_text.short_answer_present:
-        tok_start_position = -1
-        tok_end_position = -1
-    if is_training and sample.clear_text.short_answer_present:
-        tok_start_position = orig_to_tok_index[sample.clear_text.short_token_start]
+    if is_training and not sample.clear_text.is_impossible:
+        ################# handling short answer tokens
+        short_tok_start_position = orig_to_tok_index[sample.clear_text.short_token_start]
         if sample.clear_text.short_token_end < len(sample.clear_text.doc_tokens):
-            tok_end_position = orig_to_tok_index[sample.clear_text.short_token_end]
+            short_tok_end_position = orig_to_tok_index[sample.clear_text.short_token_end]
         else:
-            tok_end_position = len(all_doc_tokens)
+            logger.info(f"Short answer end position not correct for question id: {sample.clear_text.qas_id}")
+            short_tok_end_position = len(all_doc_tokens)
 
-    # The -4 accounts for [CLS], [SEP] and [SEP] and special yes_no answer token [unused1] + [unused2]
+        ################# handling long answer tokens
+        long_tok_start_position = orig_to_tok_index[sample.clear_text.long_token_start]
+        if sample.clear_text.long_token_end < len(sample.clear_text.doc_tokens):
+            long_tok_end_position = orig_to_tok_index[sample.clear_text.long_token_end]
+        else:
+            logger.info(f"Long answer end position not correct for question id: {sample.clear_text.qas_id}")
+            long_tok_end_position = len(all_doc_tokens)
+
+    # The -5 accounts for [CLS] (for impossible), [unused1] (for yes), [unused2] (for no),  [SEP] and [SEP]
     max_tokens_for_doc = max_seq_len - len(query_tokens) - 5
 
     # We can have documents that are longer than the maximum sequence length.
@@ -533,16 +537,14 @@ def sample_to_features_nq(
     for (doc_span_index, doc_span) in enumerate(doc_spans):
         tokens = []
         segment_ids = []
+        # using CLS for questions that are impossible to answer given the doc
         tokens.append("[CLS]")
         segment_ids.append(0)
-
-
         ######### for yes no answer we add special tokens for yes [unsued1] and no [unused2]
         tokens.append("[unused1]")
         segment_ids.append(0)
         tokens.append("[unused2]")
         segment_ids.append(0)
-
 
         for token in query_tokens:
             tokens.append(token)
@@ -575,30 +577,52 @@ def sample_to_features_nq(
 
         start_position = 0
         end_position = 0
-        if is_training and sample.clear_text.short_answer_present:
+        if is_training and not sample.clear_text.is_impossible:
             # For training, if our document chunk does not contain an annotation
             # we keep it but set the start and end position to unanswerable
             doc_start = doc_span.start
             doc_end = doc_span.start + doc_span.length - 1
-            out_of_span = False
-            if not (tok_start_position >= doc_start and tok_end_position <= doc_end):
-                out_of_span = True
-            if out_of_span:
+            short_out_of_span = False
+            if (short_tok_start_position < doc_start) or (short_tok_end_position > doc_end):
+                short_out_of_span = True
+            if not short_out_of_span:
+                doc_offset = len(query_tokens) + 4 #4 = [CLS], unused1+2, [SEP] (the last [SEP] comes after doc tokens)
+                short_start_position = short_tok_start_position - doc_start + doc_offset
+                short_end_position = short_tok_end_position - doc_start + doc_offset
+                start_position = short_start_position
+                end_position = short_end_position
+
+            long_out_of_span = False
+            if (long_tok_start_position < doc_start) or (long_tok_end_position > doc_end):
+                long_out_of_span = True
+            if not long_out_of_span:
+                doc_offset = len(
+                    query_tokens) + 4  # 4 = [CLS], unused1+2, [SEP] (the last [SEP] comes after doc tokens)
+                long_start_position = long_tok_start_position - doc_start + doc_offset
+                long_end_position = long_tok_end_position - doc_start + doc_offset
+                # We will only have a long answer if no short answer is present
+                # So at inference time the long answers will be selected from the "long_answer_candidates".
+                # Therefore we predict short answers and then select the shortest "long_answer_candidates" surrounding
+                # this answer.
+                # We just have to take into account that sometimes long answers are predicted, then the candidate
+                # that best matches this long answer should be selected
+                if short_out_of_span:
+                    start_position = long_start_position
+                    end_position = long_end_position
+
+
+            # no long and short answer for current passage, so set to is impossible
+            if long_out_of_span and short_out_of_span:
                 start_position = 0
                 end_position = 0
-            else:
-                doc_offset = len(query_tokens) + 4 # cls, unused1+2, sep
-                start_position = tok_start_position - doc_start + doc_offset
-                end_position = tok_end_position - doc_start + doc_offset
-        if is_training and not sample.clear_text.short_answer_present:
-            start_position = 0
-            end_position = 0
-        if is_training and (sample.clear_text.yes_no_answer == "YES"):
-            start_position = 1
-            end_position = 1
-        if is_training and (sample.clear_text.yes_no_answer == "NO"):
-            start_position = 2
-            end_position = 2
+
+            # YES NO part
+            if is_training and (sample.clear_text.yes_no_answer == "YES"):
+                start_position = 1
+                end_position = 1
+            if is_training and (sample.clear_text.yes_no_answer == "NO"):
+                start_position = 2
+                end_position = 2
 
         inp_feat = {}
         inp_feat["input_ids"] = input_ids
@@ -606,7 +630,7 @@ def sample_to_features_nq(
         inp_feat["segment_ids"] = segment_ids  # token_type_ids
         inp_feat["start_position"] = start_position
         inp_feat["end_position"] = end_position
-        inp_feat["short_answer_present"] = sample.clear_text.short_answer_present
+        inp_feat["is_impossible"] = sample.clear_text.is_impossible
         inp_feat["sample_id"] = sample.id
         inp_feat["passage_shift"] = doc_span.start
         features.append(inp_feat)
