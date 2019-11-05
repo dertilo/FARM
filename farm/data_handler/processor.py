@@ -1016,8 +1016,8 @@ class NaturalQuestionsProcessor(Processor):
         return dicts
 
     def _dict_to_samples(self, dictionary: dict, **kwargs) -> [Sample]:
-        if "yes_no_answer" not in dictionary:
-            dictionary = self._convert_rest_api_dict(infer_dict=dictionary)
+        # if "yes_no_answer" not in dictionary:
+        #     dictionary = self._convert_rest_api_dict(infer_dict=dictionary)
         samples = create_samples_nq(entry=dictionary)
         for sample in samples:
             tokenized = tokenize_with_metadata(

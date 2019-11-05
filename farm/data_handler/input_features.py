@@ -480,11 +480,9 @@ def sample_to_features_nq(
     sample.clear_text = DotMap(sample.clear_text, _dynamic=False)
     is_training = sample.clear_text.is_training
 
-    unique_id = 1000000000
     features = []
 
     query_tokens = tokenizer.tokenize(sample.clear_text.question_text)
-
     if len(query_tokens) > max_query_length:
         query_tokens = query_tokens[0:max_query_length]
 
@@ -634,6 +632,5 @@ def sample_to_features_nq(
         inp_feat["sample_id"] = sample.id
         inp_feat["passage_shift"] = doc_span.start
         features.append(inp_feat)
-        unique_id += 1
 
     return features

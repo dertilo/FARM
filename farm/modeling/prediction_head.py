@@ -1138,3 +1138,144 @@ class NQAnsweringHead(QuestionAnsweringHead):
         #                  end_probs[range(best_indices.shape[0]), np.squeeze(best_indices[:, 1])]) / 2
 
         return (best_indices[:, 0], best_indices[:, 1], best_answer_sum, sample_ids, question_shifts, passage_shifts)
+
+    def formatted_preds(self, logits, preds, samples):
+        """
+        This function is very similar to the one from QuestionAnsweringHead
+        differences:
+        1. squad and natural questions differ in their end token. For squad it is inclusive, for nq it is exclusive
+        2. nq predictions should be in whitespace tokenized space, for squad we get actual strings and character offsets
+        3. nq we have long answer + short answer and candidates for the long answers
+
+        Format predictions into actual answer strings (substrings of context). Used for Inference!
+
+        :param logits: palceholder to comply with LanguageModel.formatted_preds
+        :type logits: None
+        :param preds: predictions for each passage, coming from logits_to_preds()
+                      contains start_idxs, end_idxs, logit_sums, sample_ids, question_shifts, passage_shifts, probabilities
+        :type preds: tuple( 7 numpy arrays )
+        :param samples: converted samples, to get a hook onto the actual text
+        :type samples: List[FARM.data_handler.samples.Sample]
+        :param kwargs: placeholder for passing generic parameters
+        :type kwargs: object
+        :return: Answers to the (ultimate) questions
+        :rtype: list(str)
+        """
+
+        all_preds_passage_aggregated = self._aggregate_preds(preds=preds)
+
+        result = {}
+        result["task"] = "qa"
+        all_preds = []
+        sample_id_to_index = dict([(sample.id,i) for i,sample in enumerate(samples)])
+        for current_pred in all_preds_passage_aggregated:
+            sampleid_i = current_pred[0, 3]
+            try:
+                current_sample = samples[sample_id_to_index[sampleid_i]]
+            except Exception as e:
+                current_sample = None
+                logger.warning(f"Sample id: {sampleid_i} could not be loaded. Error: {e} ")
+            if current_sample is not None:
+                passage_predictions = []
+                for i in range(current_pred.shape[0]):
+                    passage_pred = {}
+                    if self.top_n_predictions > 1:
+                        passage_pred["prediction_rank"] = i
+                    s_i = current_pred[i,0]
+                    e_i = current_pred[i,1]
+                    logit_sum_i = current_pred[i,2]
+                    question_shift_i = current_pred[i,4]
+                    passage_shift_i = current_pred[i,5]
+                    passage_pred["score"] = logit_sum_i
+                    passage_pred["probability"] = -1 # TODO add probabilities that make sense : )
+                    try:
+                        #default to returning no answer
+                        start = 0
+                        end = 0
+                        context_start = 0
+                        answer = ""
+                        context = ""
+                        if(s_i + e_i > 0):
+                            current_start = int(s_i + passage_shift_i - question_shift_i)
+                            current_end = int(e_i + passage_shift_i - question_shift_i) # difference to squad, exclusive end token
+                            start = current_sample.tokenized["offsets"][current_start]
+                            end = current_sample.tokenized["offsets"][current_end]
+                            # we want the answer in original string space (containing newline, tab or multiple
+                            # whitespace. So we need to join doc tokens and work with character offsets
+                            temptext = " ".join(current_sample.clear_text["doc_tokens"])
+                            answer = temptext[start:end]
+                            answer = answer.strip()
+                            # sometimes we strip trailing whitespaces, so we need to adjust end
+                            end = start + len(answer)
+                            context_start = int(np.clip((start-self.context_size),a_min=0,a_max=None))
+                            context_end = int(np.clip(end +self.context_size,a_max=len(temptext),a_min=None))
+                            context = temptext[context_start:context_end]
+                    except IndexError as e:
+                        logger.info(e)
+
+
+                    ########## Natural questions related processing.
+
+                    #turn character offset to whitespace token offset
+                    if(len(answer) > 0):
+                        chars_to_tokens = []
+                        for i,t in enumerate(current_sample.clear_text.doc_tokens):
+                            temp = [i] * len(t)
+                            chars_to_tokens.extend(temp)
+                        token_start = chars_to_tokens[start]
+                        token_end = chars_to_tokens[end] + 1 #exclusive last token
+
+
+                    # get best matching long_answer candidate
+                    pred_range = set(range(token_start, token_end))
+                    num_same_per_candidate = []
+                    percentage_overlap = []
+                    for c in current_sample.clear_text.long_answer_candidates:
+                        c_range = set(range(c.start_token, c.end_token))
+                        num_same = len(c_range.intersection(pred_range))
+                        percentage_overlap.append(num_same/len(c_range))
+                        num_same_per_candidate.append(num_same)
+
+                    percentage_overlap = np.array(percentage_overlap)
+                    num_same_per_candidate = np.array(num_same_per_candidate)
+                    idx_cands = np.nonzero(num_same_per_candidate == np.max(num_same_per_candidate))[0]
+                    if idx_cands.shape[0] > 1:
+                        winner_idx = np.argmax(percentage_overlap[num_same_per_candidate == np.max(num_same_per_candidate)])
+                    else:
+                        winner_idx = np.argmax(num_same_per_candidate)
+                    winner_candidate = current_sample.clear_text.long_answer_candidates[winner_idx]
+
+                    # if answer produced is short compared to the candidate, we use it as shoprt answer
+                    if (percentage_overlap[winner_idx] == 0):
+                        passage_pred["short_answer_text"] = ""
+                        passage_pred["short_answer_start"] = -1
+                        passage_pred["short_answer_end"] = -1
+
+                        passage_pred["long_answer_start"] = -1
+                        passage_pred["long_answer_end"] = -1
+                    elif(percentage_overlap[winner_idx] < 0.3): # 0.3 threshold set by magic intuition
+                        passage_pred["short_answer_text"] = answer
+                        passage_pred["short_answer_start"] = token_start
+                        passage_pred["short_answer_end"] = token_end
+
+                        passage_pred["long_answer_start"] = winner_candidate.start_token
+                        passage_pred["long_answer_end"] = winner_candidate.end_token
+                    else: # we just use predict long answer an no short answer
+                        passage_pred["short_answer_text"] = ""
+                        passage_pred["short_answer_start"] = -1
+                        passage_pred["short_answer_end"] = -1
+
+                        passage_pred["long_answer_start"] = winner_candidate.start_token
+                        passage_pred["long_answer_end"] = winner_candidate.end_token
+
+                    passage_predictions.append(passage_pred)
+
+                pred = {}
+                pred["question"] = current_sample.clear_text.question_text
+                pred["example_id"] = current_sample.clear_text.get("qas_id", None)
+                pred["ground_truth_short"] = current_sample.clear_text.get("short_answer_text", None)
+                pred["answers"] = passage_predictions
+                all_preds.append(pred)
+
+        result["predictions"] = all_preds
+        return result

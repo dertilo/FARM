@@ -268,11 +268,12 @@ def create_samples_nq(entry):
     clear_text["long_token_start"] = long_token_start
     clear_text["long_token_end"] = long_token_end
 
-    clear_text["yes_no_answer"] = entry["yes_no_answer"]
+    clear_text["yes_no_answer"] = entry.get("yes_no_answer",None)
     clear_text["is_impossible"] = is_impossible
 
     clear_text["is_training"] = is_training
     clear_text["document_id"] = entry.get("document_id", None)
+    clear_text["long_answer_candidates"] = entry.get("long_answer_candidates", None)
     example = Sample(
         id=None, clear_text=clear_text, features=None, tokenized=None
     )

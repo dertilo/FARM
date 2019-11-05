@@ -101,7 +101,7 @@ def read_squad_file(filename):
     return input_data
 
 
-def jsonl_to_df(file_path, load_annotations=True, truncate=False, offset=200):
+def jsonl_to_df(file_path, truncate=False, offset=200):
     """
     Simple utility function to load the .jsonl files for the
     TF2.0 QA competition. It creates a dataframe of the dataset.
@@ -141,17 +141,18 @@ def jsonl_to_df(file_path, load_annotations=True, truncate=False, offset=200):
                 break
 
             line = json.loads(line)
-            last_token = line['long_answer_candidates'][-1]['end_token']
 
             out_di = {
                 'document_text': line['document_text'],
                 'question_text': line['question_text']
             }
 
+            out_di["long_answer_candidates"] = line.get('long_answer_candidates',None)
+
             if 'example_id' in line:
                 out_di['example_id'] = line['example_id']
 
-            if load_annotations:
+            if "annotations" in line:
                 annot = line['annotations'][0]
 
                 out_di['yes_no_answer'] = annot['yes_no_answer']
@@ -221,6 +222,28 @@ def write_squad_predictions(predictions, out_filename, predictions_filename=None
     filepath = os.path.join("model_output",out_filename)
     json.dump(predictions_json, open(filepath, "w"))
     logger.info(f"Written Squad predictions to: {filepath}")
+
+def write_natural_questions_predictions(predictions, out_filename):
+    predictions_json = {}
+    for p in predictions:
+        for x in p["predictions"]:
+            id = x["example_id"]
+            # short answers
+            if(x["answers"][0]["short_answer_start"] > -1):
+                short_answer = f'{x["answers"][0]["short_answer_start"]}:{x["answers"][0]["short_answer_end"]}'
+            else:
+                short_answer = ""
+            predictions_json[f"{id}_short"] = short_answer
+            # long answers
+            if (x["answers"][0]["long_answer_start"] > -1):
+                long_answer = f'{x["answers"][0]["long_answer_start"]}:{x["answers"][0]["long_answer_end"]}'
+            else:
+                long_answer = ""
+            predictions_json[f"{id}_long"] = long_answer
+
+    df = pd.DataFrame.from_dict(data=predictions_json, orient="index", columns=["PredictionString"])
+    df.to_csv(out_filename,index_label="example_id")
+    logger.info(f"Written Squad predictions to: {out_filename}")
 
 
 def _download_extract_downstream_data(input_file):
