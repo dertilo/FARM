@@ -1222,8 +1222,22 @@ class NQAnsweringHead(QuestionAnsweringHead):
                         for i,t in enumerate(current_sample.clear_text.doc_tokens):
                             temp = [i] * len(t)
                             chars_to_tokens.extend(temp)
-                        token_start = chars_to_tokens[start]
-                        token_end = chars_to_tokens[end] + 1 #exclusive last token
+
+                        try:
+                            token_start = chars_to_tokens[start]
+                        except IndexError:
+                            logging.info(f"index out of range for index {start} and into array of len {len(chars_to_tokens)}")
+                            token_start = 0
+                        try:
+                            # current implementation has inclusive end, but we need exclusive last token
+                            token_end = chars_to_tokens[end] + 1
+                        except IndexError:
+                            logging.info(f"index out of range for index {end} and into array of len {len(chars_to_tokens)}")
+                            token_end = chars_to_tokens[-1]
+                    else:
+                        token_start = -1
+                        token_end = -1
+
 
 
                     # get best matching long_answer candidate
