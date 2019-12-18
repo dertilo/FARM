@@ -11,6 +11,9 @@ from farm.modeling.prediction_head import TokenClassificationHead
 from farm.modeling.tokenization import Tokenizer
 from farm.train import Trainer
 from farm.utils import set_all_seeds, MLFlowLogger, initialize_device_settings
+from pathlib import Path
+home = str(Path.home())
+data_path = home+'/data/germEval_2014'
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
@@ -18,18 +21,18 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-# ml_logger = MLFlowLogger(tracking_uri="https://public-mlflow.deepset.ai/")
-# ml_logger.init_experiment(experiment_name="Public_FARM", run_name="Run_minimal_example_ner")
+ml_logger = MLFlowLogger('mlruns')
+ml_logger.init_experiment(experiment_name="GermEval-2014-NER", run_name="3 epochs, multilingual-bert; seed 123")
 
 ##########################
 ########## Settings
 ##########################
-set_all_seeds(seed=42)
+set_all_seeds(seed=123)
 device, n_gpu = initialize_device_settings(use_cuda=True)
-n_epochs = 1
-batch_size = 32
+n_epochs = 3
+batch_size = 16
 evaluate_every = 100
-lang_model = "bert-base-german-cased"
+lang_model = "bert-base-multilingual-cased"
 
 # 1.Create a tokenizer
 tokenizer = Tokenizer.load(
@@ -37,10 +40,12 @@ tokenizer = Tokenizer.load(
     do_lower_case=False)
 
 # 2. Create a DataProcessor that handles all the conversion from raw text into a pytorch Dataset
-ner_labels = ["[PAD]", "X", "O", "B-MISC", "I-MISC", "B-PER", "I-PER", "B-ORG", "I-ORG", "B-LOC", "I-LOC", "B-OTH", "I-OTH"]
+# ner_labels = ["[PAD]", "X", "O", "B-MISC", "I-MISC", "B-PER", "I-PER", "B-ORG", "I-ORG", "B-LOC", "I-LOC", "B-OTH", "I-OTH"]
+with open(data_path+'/labels.txt','r') as f:
+    ner_labels = [l.replace('\n','') for l in f.readlines()]+['X',"[PAD]"]
 
 processor = NERProcessor(
-    tokenizer=tokenizer, max_seq_len=128, data_dir="../data/conll03-de", metric="seq_f1",label_list=ner_labels
+    tokenizer=tokenizer, max_seq_len=128, data_dir=data_path, metric="seq_f1",label_list=ner_labels,delimiter=" "
 )
 
 # 3. Create a DataSilo that loads several datasets (train/dev/test), provides DataLoaders for them and calculates a few descriptive statistics of our datasets
