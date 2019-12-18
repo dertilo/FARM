@@ -156,19 +156,24 @@ class Trainer:
         :param warmup_linear: TODO
         :param evaluate_every: Perform dev set evaluation after this many steps of training.
         :type evaluate_every: int
-        :param evaluator_dev: The dev set Evaluator object.
-        :type evaluator_dev: Evaluator
-        :param evaluator_test: The test set Evaluator object.
-        :type evaluator_test: Evaluator
+        :param evaluator_dev: Evaluator for dev set. Options:
+                              `None` (Default) => will init a new evaluator, if there's a dev set in the DataSilo
+                              `Evaluator Object` => use the manually supplied evaluator
+                              `False` => Don't use any evaluator
+        :type evaluator_dev: Evaluator, None or False
+        :param evaluator_test: Evaluator for test set. Options:
+                              `None` (Default) => will init a new evaluator, if there's a test set in the DataSilo
+                              `Evaluator Object` => use the manually supplied evaluator
+                              `False` => Don't use any evaluator
+        :type evaluator_test: Evaluator, None or False
         :param fp16: Whether to use floating point 16 mode.
         :type fp16: bool
         :param grad_acc_steps: TODO
         :type grad_acc_steps: int
         :param local_rank: TODO
         :type local_rank: int
-        :param early_stopping: an initialized EarlyStopping object to control early stopping and
-        saving of best models.
-        :type EarlyStopping
+        :param early_stopping: an initialized EarlyStopping object to control early stopping and saving of best models.
+        :type early_stopping: EarlyStopping
         """
         self.data_silo = data_silo
         self.epochs = int(epochs)
@@ -225,10 +230,12 @@ class Trainer:
 
         do_stopping = False
         evalnr = 0
+        loss = 0
         for epoch in range(1, self.epochs + 1):
-            for step, batch in enumerate(
-                tqdm(self.data_loader_train, desc=f"Train epoch {epoch}/{self.epochs}")
-            ):
+            progress_bar = tqdm(self.data_loader_train)
+            for step, batch in enumerate(progress_bar):
+                progress_bar.set_description(f"Train epoch {epoch}/{self.epochs} (Cur. train loss: {loss:.4f})")
+
                 # Move batch of samples to device
                 batch = {key: batch[key].to(self.device) for key in batch}
 
@@ -236,10 +243,10 @@ class Trainer:
                 logits = model.forward(**batch)
                 per_sample_loss = model.logits_to_loss(logits=logits, **batch)
 
-                self.backward_propagate(per_sample_loss, step)
+                loss = self.backward_propagate(per_sample_loss, step)
 
                 # Perform  evaluation
-                if self.evaluator_dev is not None:
+                if self.evaluator_dev:
                     if self.global_step != 0 and (
                         self.global_step % self.evaluate_every == 0
                     ):
@@ -262,12 +269,16 @@ class Trainer:
                 self.global_step += 1
             if do_stopping:
                 break
-        if self.evaluator_test is not None:
-            if self.early_stopping and self.early_stopping.save_dir:
-                logger.info("Restoring best model so far from {}".format(self.early_stopping.save_dir))
-                lm_name = model.language_model.name
-                model = AdaptiveModel.load(self.early_stopping.save_dir, self.device, lm_name=lm_name)
-                model.connect_heads_with_processor(self.data_silo.processor.tasks, require_labels=True)
+
+        # With early stopping we want to restore the best model
+        if self.early_stopping and self.early_stopping.save_dir:
+            logger.info("Restoring best model so far from {}".format(self.early_stopping.save_dir))
+            lm_name = model.language_model.name
+            model = AdaptiveModel.load(self.early_stopping.save_dir, self.device, lm_name=lm_name)
+            model.connect_heads_with_processor(self.data_silo.processor.tasks, require_labels=True)
+
+        # Eval on test set
+        if self.evaluator_test:
             result = self.evaluator_test.eval(model)
             self.evaluator_test.log_results(result, "Test", self.global_step)
         return model
@@ -296,6 +307,7 @@ class Trainer:
                 # MlLogger.write_metrics({"learning_rate": lr_this_step}, step=self.global_step)
             self.optimizer.step()
             self.optimizer.zero_grad()
+        return loss
 
     def adjust_loss(self, loss):
         loss = loss.mean()
