@@ -21,20 +21,22 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-ml_logger = MLFlowLogger(tracking_uri="https://public-mlflow.deepset.ai/")
-ml_logger.init_experiment(experiment_name="Public_FARM", run_name="Run_question_answering")
+ml_logger = MLFlowLogger(tracking_uri="mlruns")
+ml_logger.init_experiment(experiment_name="SQUAD20", run_name="xlnet-large-cased")
 
 ##########################
 ########## Settings
 ##########################
 set_all_seeds(seed=42)
 device, n_gpu = initialize_device_settings(use_cuda=True)
-batch_size = 24
+batch_size = 8
 n_epochs = 2
 evaluate_every = 500
-base_LM_model = "bert-base-cased"
+base_LM_model = "xlnet-large-cased"
 train_filename="train-v2.0.json"
 dev_filename="dev-v2.0.json"
+from pathlib import Path
+home = str(Path.home())
 
 # 1.Create a tokenizer
 tokenizer = Tokenizer.load(
@@ -51,18 +53,18 @@ processor = SquadProcessor(
     train_filename=train_filename,
     dev_filename=dev_filename,
     test_filename=None,
-    data_dir="../data/squad20",
+    data_dir=home+"/data/QA/SQUAD20",
 )
 
 
 # 3. Create a DataSilo that loads several datasets (train/dev/test), provides DataLoaders for them and calculates a few descriptive statistics of our datasets
-data_silo = DataSilo(processor=processor, batch_size=batch_size, distributed=False)
+data_silo = DataSilo(processor=processor, batch_size=batch_size, distributed=False,automatic_loading=True)
 
 # 4. Create an AdaptiveModel
 # a) which consists of a pretrained language model as a basis
 language_model = LanguageModel.load(base_LM_model)
 # b) and a prediction head on top that is suited for our task => Question Answering
-prediction_head = QuestionAnsweringHead(layer_dims=[768, len(label_list)])
+prediction_head = QuestionAnsweringHead(layer_dims=[1024, len(label_list)])
 
 model = AdaptiveModel(
     language_model=language_model,
